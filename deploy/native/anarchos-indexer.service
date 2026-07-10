@@ -1,5 +1,5 @@
 [Unit]
-Description=Anarchos Nostr event indexer
+Description=Anarchy Relay event indexer
 After=network-online.target anarchos-relay.service
 Wants=network-online.target
 

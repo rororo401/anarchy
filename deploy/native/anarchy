@@ -1,0 +1,367 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH=$(readlink -f "${BASH_SOURCE[0]}")
+SCRIPT_DIR=$(cd "$(dirname "$SCRIPT_PATH")" && pwd)
+FALLBACK_APP_DIR=$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd || true)
+APP_DIR=${ANARCHY_APP_DIR:-}
+
+if [[ -z "$APP_DIR" && -f /etc/anarchos/app-dir ]]; then
+  APP_DIR=$(< /etc/anarchos/app-dir)
+fi
+if [[ -z "$APP_DIR" && -f "$FALLBACK_APP_DIR/package.json" ]]; then
+  APP_DIR=$FALLBACK_APP_DIR
+fi
+if [[ -z "$APP_DIR" ]]; then
+  echo "Anarchy Relay installation directory could not be found." >&2
+  echo "Set ANARCHY_APP_DIR or reinstall the native deployment." >&2
+  exit 1
+fi
+
+SOURCE_ENV=${ANARCHY_ENV_FILE:-$APP_DIR/.env}
+RUNTIME_ENV=${ANARCHY_RUNTIME_ENV_FILE:-/etc/anarchos/anarchos.env}
+ADMIN_SCRIPT=${ANARCHY_ADMIN_SCRIPT:-$APP_DIR/deploy/native/admin.sh}
+SYSTEMCTL=${ANARCHY_SYSTEMCTL:-systemctl}
+JOURNALCTL=${ANARCHY_JOURNALCTL:-journalctl}
+
+usage() {
+  cat <<'HELP'
+Anarchy Relay command-line interface
+
+Usage:
+  anarchy <command> [arguments]
+  anarchy relay <command> [arguments]
+
+Moderation:
+  hide-event <event-id>                 Hide an event on this website
+  unhide-event <event-id>               Restore a hidden event
+  block-pubkey <hex-pubkey> [reason]    Block a public key locally
+  unblock-pubkey <hex-pubkey>           Remove a local public-key block
+  list-blocked                          List locally blocked public keys
+
+Database and wallet:
+  reindex                               Rebuild public SQLite projections
+  ledger-audit                          Show local point balances
+
+Relay management:
+  relay list                            List the local and connected relays
+  relay add <ws-or-wss-url>             Add a remote relay and restart readers
+  relay remove <ws-or-wss-url>          Remove a remote relay and restart readers
+  relay backfill <ws-or-wss-url>        Copy archived events to a relay
+  relay status                          Show relay, indexer, and web service status
+  relay restart                         Restart relay, indexer, and web services
+  relay logs                            Follow relay and indexer logs
+
+Compatibility alias:
+  backfill-relay <url>                  Same operation as relay backfill
+
+Help:
+  help, --help, -h
+
+Adding a relay affects new subscriptions and publications. It does not copy
+old events automatically; run `anarchy relay backfill <url>` when needed.
+HELP
+}
+
+fail() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+require_root() {
+  if [[ $EUID -ne 0 ]]; then
+    fail "this command changes the native installation; run it with sudo"
+  fi
+}
+
+read_env_value() {
+  local file=$1
+  local key=$2
+  local line=""
+  [[ -f "$file" ]] || return 0
+  line=$(grep -E "^[[:space:]]*${key}=" "$file" | tail -n 1 || true)
+  line=${line#*=}
+  line=${line%$'\r'}
+  if [[ "$line" == \"*\" && "$line" == *\" ]]; then
+    line=${line:1:${#line}-2}
+  elif [[ "$line" == \'*\' && "$line" == *\' ]]; then
+    line=${line:1:${#line}-2}
+  fi
+  printf '%s' "$line"
+}
+
+preferred_env_value() {
+  local key=$1
+  local value
+  value=$(read_env_value "$SOURCE_ENV" "$key")
+  if [[ -z "$value" ]]; then
+    value=$(read_env_value "$RUNTIME_ENV" "$key")
+  fi
+  printf '%s' "$value"
+}
+
+normalize_relay_url() {
+  local raw=$1
+  node - "$raw" <<'NODE'
+const raw = process.argv[2];
+let url;
+try {
+  url = new URL(raw);
+} catch {
+  console.error(`invalid relay URL: ${raw}`);
+  process.exit(1);
+}
+if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+  console.error(`relay URL must use ws:// or wss://: ${raw}`);
+  process.exit(1);
+}
+if (url.username || url.password) {
+  console.error(`relay URL must not contain credentials: ${raw}`);
+  process.exit(1);
+}
+url.hash = "";
+url.search = "";
+url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+console.log(url.toString().replace(/\/$/, ""));
+NODE
+}
+
+public_relay_array() {
+  local raw
+  local item
+  raw=$(preferred_env_value PUBLIC_RELAY_URLS)
+  IFS=',' read -r -a items <<< "$raw"
+  for item in "${items[@]}"; do
+    item=${item#"${item%%[![:space:]]*}"}
+    item=${item%"${item##*[![:space:]]}"}
+    [[ -n "$item" ]] && normalize_relay_url "$item"
+  done
+}
+
+set_env_value() {
+  local file=$1
+  local key=$2
+  local value=$3
+  local directory
+  local temporary
+  local mode=600
+  local owner=""
+  local group=""
+
+  directory=$(dirname "$file")
+  mkdir -p "$directory"
+  temporary=$(mktemp "$directory/.${key}.XXXXXX")
+
+  if [[ -f "$file" ]]; then
+    mode=$(stat -c '%a' "$file")
+    owner=$(stat -c '%u' "$file")
+    group=$(stat -c '%g' "$file")
+    awk -v key="$key" -v replacement="$key=$value" '
+      BEGIN { written = 0 }
+      $0 ~ "^[[:space:]]*" key "=" {
+        if (!written) print replacement
+        written = 1
+        next
+      }
+      { print }
+      END { if (!written) print replacement }
+    ' "$file" > "$temporary"
+  else
+    printf '%s=%s\n' "$key" "$value" > "$temporary"
+  fi
+
+  chmod "$mode" "$temporary"
+  if [[ -n "$owner" && -n "$group" ]]; then
+    chown "$owner:$group" "$temporary"
+  fi
+  mv "$temporary" "$file"
+}
+
+write_public_relays() {
+  local value=$1
+  [[ -f "$SOURCE_ENV" ]] || fail "source environment file not found: $SOURCE_ENV"
+  set_env_value "$SOURCE_ENV" PUBLIC_RELAY_URLS "$value"
+  if [[ -f "$RUNTIME_ENV" ]]; then
+    set_env_value "$RUNTIME_ENV" PUBLIC_RELAY_URLS "$value"
+  fi
+}
+
+restart_readers() {
+  if [[ ${ANARCHY_NO_RESTART:-0} == 1 ]]; then
+    echo "service restart skipped (ANARCHY_NO_RESTART=1)"
+    return
+  fi
+  "$SYSTEMCTL" restart anarchos-indexer anarchos-web
+}
+
+relay_list() {
+  local internal
+  local public
+  local relays=()
+  internal=$(preferred_env_value INTERNAL_RELAY_URL)
+  public=$(preferred_env_value NEXT_PUBLIC_RELAY_URL)
+  [[ -n "$internal" ]] || internal="ws://127.0.0.1:7777"
+
+  echo "Anarchy Relay configuration"
+  printf '  %-16s %s\n' "internal" "$internal"
+  if [[ -n "$public" ]]; then
+    printf '  %-16s %s\n' "public endpoint" "$public"
+  fi
+
+  mapfile -t relays < <(public_relay_array)
+  if [[ ${#relays[@]} -eq 0 ]]; then
+    printf '  %-16s %s\n' "remote relays" "none"
+  else
+    local relay
+    local first=1
+    for relay in "${relays[@]}"; do
+      if [[ $first -eq 1 ]]; then
+        printf '  %-16s %s\n' "remote relay" "$relay"
+        first=0
+      else
+        printf '  %-16s %s\n' "" "$relay"
+      fi
+    done
+  fi
+}
+
+relay_add() {
+  require_root
+  local requested=${1:-}
+  [[ -n "$requested" ]] || fail "usage: anarchy relay add <ws-or-wss-url>"
+  local target
+  local local_public
+  local relays=()
+  local next=()
+  local relay
+
+  target=$(normalize_relay_url "$requested")
+  local_public=$(preferred_env_value NEXT_PUBLIC_RELAY_URL)
+  if [[ -n "$local_public" && "$target" == "$(normalize_relay_url "$local_public")" ]]; then
+    fail "$target is this deployment's public relay"
+  fi
+
+  mapfile -t relays < <(public_relay_array)
+  for relay in "${relays[@]}"; do
+    if [[ "$relay" == "$target" ]]; then
+      echo "$target is already configured"
+      return
+    fi
+    next+=("$relay")
+  done
+  next+=("$target")
+
+  local joined
+  joined=$(IFS=,; echo "${next[*]}")
+  write_public_relays "$joined"
+  restart_readers
+  echo "added relay: $target"
+  echo "historical events were not copied; run: sudo anarchy relay backfill $target"
+}
+
+relay_remove() {
+  require_root
+  local requested=${1:-}
+  [[ -n "$requested" ]] || fail "usage: anarchy relay remove <ws-or-wss-url>"
+  local target
+  local relays=()
+  local next=()
+  local relay
+  local found=0
+
+  target=$(normalize_relay_url "$requested")
+  mapfile -t relays < <(public_relay_array)
+  for relay in "${relays[@]}"; do
+    if [[ "$relay" == "$target" ]]; then
+      found=1
+    else
+      next+=("$relay")
+    fi
+  done
+
+  if [[ $found -eq 0 ]]; then
+    echo "$target is not configured"
+    return
+  fi
+
+  local joined=""
+  if [[ ${#next[@]} -gt 0 ]]; then
+    joined=$(IFS=,; echo "${next[*]}")
+  fi
+  write_public_relays "$joined"
+  restart_readers
+  echo "removed relay: $target"
+  echo "existing indexed events and relay provenance records were preserved"
+}
+
+relay_status() {
+  relay_list
+  echo
+  "$SYSTEMCTL" --no-pager --full status anarchos-relay anarchos-indexer anarchos-web
+}
+
+relay_restart() {
+  require_root
+  "$SYSTEMCTL" restart anarchos-relay anarchos-indexer anarchos-web
+  echo "Anarchy Relay services restarted"
+}
+
+relay_logs() {
+  "$JOURNALCTL" -u anarchos-relay -u anarchos-indexer -f
+}
+
+run_admin() {
+  [[ -x "$ADMIN_SCRIPT" || -f "$ADMIN_SCRIPT" ]] || fail "admin script not found: $ADMIN_SCRIPT"
+  exec bash "$ADMIN_SCRIPT" "$@"
+}
+
+command=${1:-help}
+case "$command" in
+  help|--help|-h)
+    usage
+    ;;
+  relay)
+    subcommand=${2:-help}
+    case "$subcommand" in
+      help|--help|-h)
+        usage
+        ;;
+      list)
+        relay_list
+        ;;
+      add)
+        relay_add "${3:-}"
+        ;;
+      remove)
+        relay_remove "${3:-}"
+        ;;
+      backfill)
+        require_root
+        [[ -n ${3:-} ]] || fail "usage: anarchy relay backfill <ws-or-wss-url>"
+        run_admin backfill-relay "$(normalize_relay_url "$3")"
+        ;;
+      status)
+        relay_status
+        ;;
+      restart)
+        relay_restart
+        ;;
+      logs)
+        relay_logs
+        ;;
+      *)
+        fail "unknown relay command: $subcommand (run 'anarchy relay help')"
+        ;;
+    esac
+    ;;
+  hide-event|unhide-event|block-pubkey|unblock-pubkey|list-blocked|ledger-audit|reindex|backfill-relay)
+    shift
+    run_admin "$command" "$@"
+    ;;
+  *)
+    echo "unknown command: $command" >&2
+    echo >&2
+    usage >&2
+    exit 1
+    ;;
+esac

@@ -1,5 +1,5 @@
 [Unit]
-Description=Anarchos Next.js web server
+Description=Anarchy Relay web server
 After=network-online.target
 Wants=network-online.target
 

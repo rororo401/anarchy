@@ -32,6 +32,9 @@ apt-get install -y caddy
 
 install -d -o "$APP_USER" -g "$APP_USER" /var/lib/anarchos /var/lib/anarchos/strfry-db
 install -d /etc/anarchos
+printf '%s\n' "$APP_DIR" > /etc/anarchos/app-dir
+chmod 0644 /etc/anarchos/app-dir
+install -m 0755 "$APP_DIR/deploy/native/anarchy" /usr/local/bin/anarchy
 install -m 0644 "$APP_DIR/deploy/native/strfry.conf" /etc/anarchos/strfry.conf
 install -m 0644 "$APP_DIR/deploy/native/nginx-relay.conf" /etc/nginx/sites-available/anarchos-relay
 ln -sfn /etc/nginx/sites-available/anarchos-relay /etc/nginx/sites-enabled/anarchos-relay
@@ -83,5 +86,6 @@ systemctl daemon-reload
 systemctl enable --now nginx anarchos-relay anarchos-indexer anarchos-web caddy
 systemctl restart nginx anarchos-relay anarchos-indexer anarchos-web caddy
 
-echo "native install complete"
-echo "check services with: systemctl status anarchos-relay anarchos-indexer anarchos-web nginx caddy"
+echo "Anarchy Relay native install complete"
+echo "run: anarchy help"
+echo "check services with: anarchy relay status"

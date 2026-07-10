@@ -1,6 +1,6 @@
-# Anarchos
+# Anarchy Relay
 
-Anarchos is a self-hosted, Nostr-backed community website. Each deployment can run its own web application and strfry relay, connect to other Anarchos relays, publish events to all configured relays, and build a local SQLite read model from the combined event stream.
+Anarchy Relay is a self-hosted, Nostr-backed community website. Each deployment can run its own web application and strfry relay, connect to other Anarchy Relay nodes, publish events to all configured relays, and build a local SQLite read model from the combined event stream.
 
 The browser signs events locally. Secret keys are never sent to the server, and an imported `nsec` is kept only in the current tab's memory.
 
@@ -234,19 +234,26 @@ The installer sets up:
 - the event indexer
 - systemd services
 
-It stores application data under `/var/lib/anarchos` and the generated environment file at `/etc/anarchos/anarchos.env`.
+It installs the `anarchy` command in `/usr/local/bin`, stores application data under `/var/lib/anarchos`, and writes the generated environment file to `/etc/anarchos/anarchos.env`.
+
+The `/var/lib/anarchos` and `/etc/anarchos` paths, `anarchos-*` systemd unit names, and the `anarchos:fixed-nickname` event namespace are retained as compatibility identifiers. Keeping them prevents existing installations, databases, and already signed events from breaking; the user-facing project and relay name is **Anarchy Relay**.
 
 ### 6. Verify the deployment
 
 ```bash
-systemctl status anarchos-relay anarchos-indexer anarchos-web nginx caddy
+sudo anarchy relay status
 ```
 
+Follow relay and indexer logs:
+
 ```bash
-journalctl -u anarchos-web \
-  -u anarchos-indexer \
-  -u anarchos-relay \
-  -f
+sudo anarchy relay logs
+```
+
+Display every available command:
+
+```bash
+anarchy help
 ```
 
 Open the website at:
@@ -260,6 +267,37 @@ The public relay endpoint is:
 ```text
 wss://relay.example.com
 ```
+
+## Native CLI
+
+The native installer adds a small `/usr/local/bin/anarchy` wrapper around the existing administration code. It does not duplicate moderation, database, or backfill logic.
+
+```bash
+anarchy help
+```
+
+Common commands:
+
+```bash
+sudo anarchy hide-event <event-id>
+sudo anarchy block-pubkey <hex-pubkey> "spam"
+sudo anarchy reindex
+sudo anarchy ledger-audit
+```
+
+Relay commands:
+
+```bash
+sudo anarchy relay list
+sudo anarchy relay add wss://relay-b.example.com
+sudo anarchy relay remove wss://relay-b.example.com
+sudo anarchy relay backfill wss://relay-b.example.com
+sudo anarchy relay status
+sudo anarchy relay restart
+sudo anarchy relay logs
+```
+
+`relay add` and `relay remove` update `PUBLIC_RELAY_URLS` in both the repository `.env` and the installed runtime environment, then restart the web publisher and indexer. URLs are normalized and deduplicated. Adding a relay starts live publication and subscription only; historical events require a separate `relay backfill` command.
 
 ## Create another independent community deployment
 
@@ -283,7 +321,7 @@ Each deployment has its own:
 
 Connecting deployments shares signed public events. It does not merge wallets or moderation policy.
 
-## Connect two Anarchos relays
+## Connect two Anarchy Relay nodes
 
 Assume two deployments:
 
@@ -321,11 +359,17 @@ RELAY_MIN_FREE_BYTES=1073741824
 BACKFILL_DELAY_MS=100
 ```
 
-On each native deployment, apply the updated environment and restart the affected services:
+On a native deployment, the same connection can be added without editing the file manually:
 
 ```bash
-sudo bash deploy/native/update.sh
+# Run on Node A
+sudo anarchy relay add wss://relay-b.example.com
+
+# Run on Node B
+sudo anarchy relay add wss://relay-a.example.com
 ```
+
+Use `sudo bash deploy/native/update.sh` after pulling application code updates.
 
 The result is:
 
@@ -382,7 +426,7 @@ Adding a relay to `PUBLIC_RELAY_URLS` begins live subscription and publication, 
 On a native deployment, backfill the target relay:
 
 ```bash
-sudo bash deploy/native/admin.sh backfill-relay wss://relay-b.example.com
+sudo anarchy relay backfill wss://relay-b.example.com
 ```
 
 The command reads the signed events stored in the local SQLite `events` table and publishes them in order. Existing events reported as duplicates are treated as already present.
@@ -409,7 +453,7 @@ Backfill copies only events already present in the local SQLite event archive. I
 Rebuild posts, comments, reactions, and profiles from the locally archived signed events:
 
 ```bash
-sudo bash deploy/native/admin.sh reindex
+sudo anarchy reindex
 ```
 
 Reindexing does not recreate or delete the local points ledger. It also preserves the event-level nickname stored in each post or comment.
@@ -419,22 +463,22 @@ Reindexing does not recreate or delete the local points ledger. It also preserve
 Hide or restore an event locally:
 
 ```bash
-sudo bash deploy/native/admin.sh hide-event <event-id>
-sudo bash deploy/native/admin.sh unhide-event <event-id>
+sudo anarchy hide-event <event-id>
+sudo anarchy unhide-event <event-id>
 ```
 
 Block or unblock a public key locally:
 
 ```bash
-sudo bash deploy/native/admin.sh block-pubkey <hex-pubkey> <reason>
-sudo bash deploy/native/admin.sh unblock-pubkey <hex-pubkey>
-sudo bash deploy/native/admin.sh list-blocked
+sudo anarchy block-pubkey <hex-pubkey> <reason>
+sudo anarchy unblock-pubkey <hex-pubkey>
+sudo anarchy list-blocked
 ```
 
 Audit local point balances:
 
 ```bash
-sudo bash deploy/native/admin.sh ledger-audit
+sudo anarchy ledger-audit
 ```
 
 A public-key block prevents new events from that key on the local deployment. It does not automatically hide previously indexed content; use `hide-event` when required.
@@ -449,9 +493,9 @@ git pull --ff-only
 sudo bash deploy/native/update.sh
 ```
 
-The update script installs exact npm dependencies, builds the application, refreshes `/etc/anarchos/anarchos.env`, and restarts the web application, indexer, and Caddy.
+The update script installs exact npm dependencies, builds the application, refreshes the CLI and systemd unit files, updates `/etc/anarchos/anarchos.env` and the native relay information, and restarts the native services.
 
-After changes to relay policy or native relay configuration, rebuild or reinstall the relevant native components rather than assuming `update.sh` has replaced them.
+The update script refreshes the strfry configuration but does not rebuild the strfry binary or Go relay-policy binary. Reinstall or rebuild those components when their source or version changes.
 
 ## Data locations and backups
 
@@ -496,6 +540,7 @@ npm run test:rate-limit
 npm run test:relay
 npm run test:backfill
 npm run test:multi-relay
+npm run test:cli
 ```
 
 Run the Go relay-policy tests:
@@ -511,7 +556,7 @@ go test ./infra/relay-policy
 Check the configured URLs and service logs:
 
 ```bash
-journalctl -u anarchos-indexer -f
+sudo anarchy relay logs
 ```
 
 Relay URLs must begin with `ws://` or `wss://`. Public deployments normally use `wss://`.
@@ -522,7 +567,7 @@ The application deduplicates only exact Nostr event IDs. Two independently signe
 
 ### A new relay shows only new content
 
-Run `backfill-relay` to copy the historical signed events already present in the local event archive.
+Run `sudo anarchy relay backfill <relay-url>` to copy the historical signed events already present in the local event archive.
 
 ### Another deployment does not show an event
 

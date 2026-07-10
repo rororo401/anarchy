@@ -1,5 +1,5 @@
 [Unit]
-Description=Anarchos strfry Nostr relay
+Description=Anarchy Relay strfry node
 After=network-online.target
 Wants=network-online.target
 

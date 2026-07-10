@@ -9,7 +9,7 @@ for (const [index, relay] of relays.entries()) connect(relay, index);
 
 function connect(relay: string, index: number) {
   const socket = new WebSocket(relay, { handshakeTimeout: 5_000, maxPayload: 128 * 1024 });
-  const subscriptionId = `anarchos-indexer-${index}`;
+  const subscriptionId = `anarchy-relay-indexer-${index}`;
 
   socket.on("open", () => {
     console.log(`indexer connected to ${relay}`);

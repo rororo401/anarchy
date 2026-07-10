@@ -19,7 +19,7 @@ export function AppHeader() {
   return (
     <>
       <header className="app-header">
-        <Link className="brand" href="/">아나키스트 네트워크</Link>
+        <Link className="brand" href="/">Anarchy Relay</Link>
         <nav className="main-nav" aria-label="주요 메뉴">
           {links.map((link) => (
             <Link className={pathname === link.href ? "active" : ""} href={link.href} key={link.href}>

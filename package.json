@@ -1,5 +1,5 @@
 {
-  "name": "anarchist-network",
+  "name": "anarchy-relay",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -15,7 +15,8 @@
     "test:stack": "tsx server/smoke-stack.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test:multi-relay": "tsx server/validate-multi-relay.ts"
+    "test:multi-relay": "tsx server/validate-multi-relay.ts",
+    "test:cli": "bash server/validate-cli.sh"
   },
   "dependencies": {
     "next": "^15.5.16",
