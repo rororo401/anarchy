@@ -14,7 +14,8 @@
     "test:relay": "tsx server/validate-relay-publisher.ts",
     "test:stack": "tsx server/smoke-stack.ts",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:multi-relay": "tsx server/validate-multi-relay.ts"
   },
   "dependencies": {
     "next": "^15.5.16",

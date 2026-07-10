@@ -42,6 +42,7 @@ services:
     environment:
       SQLITE_PATH: /app/data/anarchos.sqlite
       INTERNAL_RELAY_URL: ws://relay:7777
+      PUBLIC_RELAY_URLS: ${PUBLIC_RELAY_URLS:-}
       BLOCKED_PUBKEY_FILE: /var/lib/anarchos/blocked-pubkeys.txt
       BACKFILL_DELAY_MS: ${BACKFILL_DELAY_MS:-100}
     volumes:

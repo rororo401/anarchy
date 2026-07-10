@@ -15,6 +15,14 @@ CREATE TABLE IF NOT EXISTS events (
   hidden integer NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS event_relays (
+  event_id text NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  relay_url text NOT NULL,
+  first_seen_at text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  last_seen_at text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  PRIMARY KEY (event_id, relay_url)
+);
+
 CREATE TABLE IF NOT EXISTS posts (
   event_id text PRIMARY KEY REFERENCES events(id),
   pubkey text NOT NULL,
@@ -75,6 +83,7 @@ CREATE TABLE IF NOT EXISTS point_ledger (
 CREATE INDEX IF NOT EXISTS posts_created_at_idx ON posts (created_at DESC);
 CREATE INDEX IF NOT EXISTS comments_root_created_idx ON comments (root_event_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS events_kind_created_idx ON events (kind, created_at DESC);
+CREATE INDEX IF NOT EXISTS event_relays_relay_idx ON event_relays (relay_url, last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS point_ledger_pubkey_created_idx ON point_ledger (pubkey, created_at DESC);
 CREATE INDEX IF NOT EXISTS posts_title_idx ON posts (title);
 CREATE INDEX IF NOT EXISTS posts_body_idx ON posts (body);

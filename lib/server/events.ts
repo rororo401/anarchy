@@ -1,10 +1,20 @@
 import { verifyEvent, type Event } from "nostr-tools";
 import { type DatabaseClient, withTransaction } from "@/lib/server/db";
+import { normalizeRelayUrl } from "@/lib/server/relay-urls";
 
 export const ALLOWED_KINDS = new Set([0, 1, 5, 7, 1111, 30078]);
+const MAX_FUTURE_SECONDS = 10 * 60;
+
+type IndexEventOptions = {
+  sourceRelay?: string;
+  sourceRelays?: string[];
+  awardLocalPoints?: boolean;
+};
 
 export function validateCommunityEvent(event: Event) {
   if (!verifyEvent(event)) throw new Error("invalid event signature");
+  if (!Number.isInteger(event.created_at)) throw new Error("invalid event timestamp");
+  if (event.created_at > Math.floor(Date.now() / 1000) + MAX_FUTURE_SECONDS) throw new Error("event timestamp too far in the future");
   if (!ALLOWED_KINDS.has(event.kind)) throw new Error("unsupported event kind");
   if (event.content.length > 10_000) throw new Error("event content too long");
   if (event.tags.length > 64) throw new Error("too many event tags");
@@ -21,14 +31,19 @@ export function validateCommunityEvent(event: Event) {
   if (event.kind === 7 && (event.content !== "+" || !tagValue(event, "e"))) throw new Error("invalid reaction");
   if (event.kind === 5 && !tagValue(event, "e")) throw new Error("deletion is missing target event");
   if (event.kind === 0) {
-    if (event.tags.length || event.content.length > 512) throw new Error("invalid profile");
+    if (event.tags.length || event.content.length > 4_096) throw new Error("invalid profile");
     parseStandardProfile(event.content);
   }
   if (event.kind === 30078) parseFixedNicknameSetting(event);
 }
 
-export async function indexEvent(event: Event) {
+export async function indexEvent(event: Event, options: IndexEventOptions = {}) {
   validateCommunityEvent(event);
+  const sourceRelays = [...new Set([
+    ...(options.sourceRelay ? [options.sourceRelay] : []),
+    ...(options.sourceRelays ?? []),
+  ].map(normalizeRelayUrl))];
+
   return withTransaction(async (client) => {
     const blocked = await client.query("SELECT 1 FROM blocked_pubkeys WHERE pubkey = $1", [event.pubkey]);
     if (blocked.rowCount) throw new Error("blocked pubkey");
@@ -39,15 +54,23 @@ export async function indexEvent(event: Event) {
        ON CONFLICT (id) DO NOTHING RETURNING id`,
       [event.id, event.pubkey, event.kind, event.created_at, event.content, JSON.stringify(event.tags), JSON.stringify(event)],
     );
-    if (!inserted.rowCount) return { inserted: false };
 
-    if (event.kind === 1) await insertPost(client, event, true);
-    if (event.kind === 1111) await insertComment(client, event, true);
-    if (event.kind === 7) await insertReaction(client, event);
-    if (event.kind === 5) await applyDeletion(client, event);
-    if (event.kind === 0) await upsertProfile(client, event);
-    if (event.kind === 30078) await upsertFixedNicknameSetting(client, event);
-    return { inserted: true };
+    for (const sourceRelay of sourceRelays) await recordEventRelay(client, event.id, sourceRelay);
+
+    if (inserted.rowCount) {
+      if (event.kind === 1) await insertPost(client, event);
+      if (event.kind === 1111) await insertComment(client, event);
+      if (event.kind === 7) await insertReaction(client, event);
+      if (event.kind === 5) await applyDeletion(client, event);
+      if (event.kind === 0) await upsertProfile(client, event);
+      if (event.kind === 30078) await upsertFixedNicknameSetting(client, event);
+    }
+
+    if (options.awardLocalPoints) {
+      if (event.kind === 1) await reward(client, event, 3, "post", 30 * 60);
+      if (event.kind === 1111) await reward(client, event, 1, "comment", 5 * 60);
+    }
+    return { inserted: Boolean(inserted.rowCount) };
   });
 }
 
@@ -58,11 +81,11 @@ export async function rebuildProjections() {
     await client.query("DELETE FROM posts");
     await client.query("DELETE FROM profiles");
     await client.query("UPDATE events SET deleted = false");
-    const result = await client.query("SELECT raw FROM events ORDER BY received_at ASC, id ASC");
+    const result = await client.query("SELECT raw FROM events ORDER BY created_at ASC, id ASC");
     for (const row of result.rows) {
       const event = JSON.parse(String(row.raw)) as Event;
-      if (event.kind === 1) await insertPost(client, event, false);
-      if (event.kind === 1111) await insertComment(client, event, false);
+      if (event.kind === 1) await insertPost(client, event);
+      if (event.kind === 1111) await insertComment(client, event);
       if (event.kind === 7) await insertReaction(client, event);
       if (event.kind === 5) await applyDeletion(client, event);
       if (event.kind === 0) await upsertProfile(client, event);
@@ -77,22 +100,29 @@ export async function rebuildProjections() {
   });
 }
 
-async function insertPost(client: DatabaseClient, event: Event, rewardEnabled: boolean) {
+async function recordEventRelay(client: DatabaseClient, eventId: string, relayUrl: string) {
+  await client.query(
+    `INSERT INTO event_relays (event_id, relay_url)
+     VALUES ($1, $2)
+     ON CONFLICT (event_id, relay_url) DO UPDATE SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+    [eventId, relayUrl],
+  );
+}
+
+async function insertPost(client: DatabaseClient, event: Event) {
   await client.query(
     `INSERT INTO posts (event_id, pubkey, title, body, author_name, created_at)
      VALUES ($1, $2, $3, $4, $5, $6)`,
     [event.id, event.pubkey, tagValue(event, "subject"), event.content, displayName(event), event.created_at],
   );
-  if (rewardEnabled) await reward(client, event, 3, "post", 30 * 60);
 }
 
-async function insertComment(client: DatabaseClient, event: Event, rewardEnabled: boolean) {
+async function insertComment(client: DatabaseClient, event: Event) {
   await client.query(
     `INSERT INTO comments (event_id, root_event_id, parent_event_id, pubkey, body, author_name, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [event.id, tagValue(event, "E"), tagValue(event, "e"), event.pubkey, event.content, displayName(event), event.created_at],
   );
-  if (rewardEnabled) await reward(client, event, 1, "comment", 5 * 60);
 }
 
 async function insertReaction(client: DatabaseClient, event: Event) {
@@ -127,7 +157,8 @@ async function upsertProfile(client: DatabaseClient, event: Event) {
        fixed_nickname = EXCLUDED.fixed_nickname,
        event_id = EXCLUDED.event_id,
        updated_at = EXCLUDED.updated_at
-     WHERE profiles.updated_at <= EXCLUDED.updated_at`,
+     WHERE profiles.updated_at < EXCLUDED.updated_at
+        OR (profiles.updated_at = EXCLUDED.updated_at AND profiles.event_id > EXCLUDED.event_id)`,
     [event.pubkey, nickname, event.id, event.created_at],
   );
 }
@@ -147,7 +178,8 @@ async function upsertFixedNicknameSetting(client: DatabaseClient, event: Event) 
        fixed_nickname_enabled = EXCLUDED.fixed_nickname_enabled,
        settings_event_id = EXCLUDED.settings_event_id,
        settings_updated_at = EXCLUDED.settings_updated_at
-     WHERE profiles.settings_updated_at <= EXCLUDED.settings_updated_at`,
+     WHERE profiles.settings_updated_at < EXCLUDED.settings_updated_at
+        OR (profiles.settings_updated_at = EXCLUDED.settings_updated_at AND COALESCE(profiles.settings_event_id, '') > EXCLUDED.settings_event_id)`,
     [event.pubkey, setting.enabled, event.id, event.created_at],
   );
 }
@@ -163,19 +195,23 @@ async function saveLegacyProfile(client: DatabaseClient, event: Event, enabled: 
        updated_at = EXCLUDED.updated_at,
        settings_event_id = EXCLUDED.settings_event_id,
        settings_updated_at = EXCLUDED.settings_updated_at
-     WHERE profiles.updated_at <= EXCLUDED.updated_at`,
+     WHERE profiles.updated_at < EXCLUDED.updated_at
+        OR (profiles.updated_at = EXCLUDED.updated_at AND profiles.event_id > EXCLUDED.event_id)`,
     [event.pubkey, enabled, nickname, event.id, event.created_at],
   );
 }
 
 function parseStandardProfile(content: string) {
   try {
-    const profile = JSON.parse(content) as unknown;
+    const profile = JSON.parse(content) as Record<string, unknown>;
     if (!profile || typeof profile !== "object" || Array.isArray(profile)) throw new Error("invalid profile JSON");
-    const entries = Object.entries(profile);
-    if (entries.length !== 1 || entries[0][0] !== "name" || typeof entries[0][1] !== "string") throw new Error("invalid profile JSON");
-    if (Array.from(entries[0][1]).length > 40) throw new Error("profile name too long");
-    return profile as { name: string };
+    if ("name" in profile && typeof profile.name !== "string") throw new Error("invalid profile JSON");
+    if ("display_name" in profile && typeof profile.display_name !== "string") throw new Error("invalid profile JSON");
+    const name = typeof profile.display_name === "string" && profile.display_name.trim()
+      ? profile.display_name
+      : typeof profile.name === "string" ? profile.name : "";
+    if (Array.from(name).length > 40) throw new Error("profile name too long");
+    return { name };
   } catch {
     throw new Error("invalid profile JSON");
   }
@@ -213,10 +249,13 @@ async function reward(client: DatabaseClient, event: Event, delta: number, reaso
     `SELECT created_at FROM point_ledger WHERE pubkey = $1 AND reason = $2 ORDER BY created_at DESC LIMIT 1`,
     [event.pubkey, reason],
   );
-  if (latest.rowCount && Math.floor(Date.now() / 1000) - Number(latest.rows[0].created_at) < intervalSeconds) return;
+  const now = Math.floor(Date.now() / 1000);
+  if (latest.rowCount && now - Number(latest.rows[0].created_at) < intervalSeconds) return;
   await client.query(
-    `INSERT INTO point_ledger (event_id, pubkey, delta, reason) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-    [event.id, event.pubkey, delta, reason],
+    `INSERT INTO point_ledger (event_id, pubkey, delta, reason, created_at)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (event_id) DO NOTHING`,
+    [event.id, event.pubkey, delta, reason, now],
   );
 }
 

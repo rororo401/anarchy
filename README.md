@@ -1,14 +1,15 @@
 # 아나키스트 네트워크
 
-Nostr 전용 릴레이와 SQLite 인덱서를 사용하는 익명 커뮤니티입니다. 브라우저에서 서명한 이벤트만 서버로 전송하며 `nsec`는 현재 탭 메모리에만 유지합니다.
+여러 Nostr 릴레이를 동시에 구독하고 SQLite를 읽기용 캐시로 사용하는 익명 커뮤니티입니다. 브라우저에서 서명한 이벤트만 서버로 전송하며 `nsec`는 현재 탭 메모리에만 유지합니다.
 
 ## 기능
 
 - Nostr kind `1` 게시글, NIP-22 kind `1111` 댓글, NIP-25 kind `7` 추천, NIP-09 kind `5` 삭제
 - NIP-01 kind `0` 표준 프로필의 `name`과 NIP-78 kind `30078` 앱 설정 기반 커뮤니티 고정닉
 - 최신순 피드, 제목·본문·닉네임 검색, 상세 페이지, 댓글
-- 게시글 `3p`, 댓글 `1p` 적립 원장과 지갑
-- strfry 전용 릴레이와 공용 릴레이 발행 복제
+- 게시글 `3p`, 댓글 `1p` 적립 원장과 로컬 지갑
+- 자체 릴레이와 `PUBLIC_RELAY_URLS`의 모든 릴레이를 동시 구독·발행
+- 같은 이벤트가 여러 릴레이에 있어도 이벤트 ID 기준으로 한 번만 표시
 - CLI 기반 게시물 숨김과 공개키 차단
 
 ## 로컬 개발
@@ -28,8 +29,8 @@ Ubuntu 서버에서는 Docker 없이 직접 실행합니다. Node.js, Caddy, Ngi
 Oracle Cloud Security List에는 외부 TCP `22`, `80`, `443` 포트를 허용해야 합니다. `7777`, `8080`, `3000` 포트는 외부에 열지 않습니다.
 
 ```bash
-git clone https://github.com/menteai/anarchos.git
-cd anarchos
+git clone https://github.com/rororo401/anarchy.git
+cd anarchy
 cp .env.example .env
 nano .env
 sudo bash deploy/native/install.sh
@@ -82,9 +83,23 @@ sudo bash deploy/native/admin.sh backfill-relay wss://relay.example.com
 
 차단은 신규 이벤트를 거부합니다. 기존 콘텐츠를 숨기려면 `hide-event`를 별도로 실행합니다.
 
-외부 릴레이를 나중에 연결할 때는 `.env`의 `PUBLIC_RELAY_URLS`를 갱신한 뒤 `backfill-relay`를 릴레이별로 한 번씩 실행합니다. 이 명령은 SQLite 색인에 보존된 기존 서명 이벤트를 오래된 순서대로 재발행합니다. 중간에 연결이 끊기면 동일한 명령을 다시 실행해도 되며, 외부 릴레이가 이미 보유한 이벤트는 중복으로 처리됩니다. 기본 전송 간격은 `BACKFILL_DELAY_MS=100`입니다.
+`PUBLIC_RELAY_URLS`에는 쉼표로 구분한 `ws://` 또는 `wss://` URL을 넣습니다. 인덱서는 자체 릴레이와 이 목록의 모든 릴레이를 각각 구독합니다. 여러 릴레이에서 같은 이벤트가 들어오면 Nostr 이벤트 ID를 기본키로 사용해 한 번만 색인하고, `event_relays`에는 어느 릴레이에서 관측했는지를 기록합니다. 이벤트 발행도 같은 목록 전체에 시도하며 하나 이상의 릴레이가 수락하면 성공으로 처리합니다.
 
-SQLite 색인은 `/var/lib/anarchos/anarchos.sqlite`, 릴레이 원본은 `/var/lib/anarchos/strfry-db`에 저장됩니다. 포인트 원장과 원본 이벤트를 보호하려면 `/var/lib/anarchos`를 정기적으로 백업해야 합니다.
+외부 릴레이를 나중에 연결할 때는 `.env`의 `PUBLIC_RELAY_URLS`를 갱신하고 서비스를 재시작한 뒤, 과거 이벤트까지 새 릴레이로 복제하려면 `backfill-relay`를 릴레이별로 한 번씩 실행합니다. 이 명령은 SQLite 색인에 보존된 기존 서명 이벤트를 오래된 순서대로 재발행합니다. 중간에 연결이 끊기면 동일한 명령을 다시 실행해도 되며, 외부 릴레이가 이미 보유한 이벤트는 중복으로 처리됩니다. 기본 전송 간격은 `BACKFILL_DELAY_MS=100`입니다.
+
+## 공개 상태는 릴레이, 지갑은 로컬 DB
+
+공개 사용자 상태는 릴레이 이벤트로 복구할 수 있습니다.
+
+- 닉네임: NIP-01 kind `0` 프로필의 `name` 또는 `display_name`
+- 고정닉 사용 여부: NIP-78 kind `30078`, `d=anarchos:fixed-nickname`
+- 게시글·댓글·추천·삭제: 각각 kind `1`, `1111`, `7`, `5`
+
+따라서 SQLite의 게시글과 프로필은 권위 있는 원본이 아니라 조회 성능을 위한 projection입니다. `sudo bash deploy/native/admin.sh reindex`로 릴레이에서 수집된 `events` 테이블을 기준으로 다시 만들 수 있습니다.
+
+포인트 원장과 지갑은 예외적으로 로컬 DB에만 저장됩니다. 외부 릴레이에서 수집한 게시글·댓글에는 포인트를 지급하지 않고, 이 웹사이트의 `/api/events`를 통해 제출된 게시글·댓글에만 지급합니다. `reindex`도 포인트 원장을 삭제하거나 릴레이 이벤트에서 재계산하지 않습니다. 게시물 숨김과 공개키 차단 역시 다른 운영자에게 전파하면 안 되는 로컬 운영 정책이므로 로컬 DB/파일에만 남습니다.
+
+SQLite 색인은 `/var/lib/anarchos/anarchos.sqlite`, 자체 릴레이 원본은 `/var/lib/anarchos/strfry-db`에 저장됩니다. 장애 복구 시간을 줄이려면 `/var/lib/anarchos`도 정기적으로 백업하는 것이 좋습니다.
 
 ## Docker 로컬 검증
 

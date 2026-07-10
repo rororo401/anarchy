@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import type { Event } from "nostr-tools";
+import { configuredRelayUrls, normalizeRelayUrl } from "@/lib/server/relay-urls";
 
 export type RelayResponse = {
   accepted: boolean;
@@ -7,15 +8,19 @@ export type RelayResponse = {
 };
 
 function relayUrls() {
-  const internal = process.env.INTERNAL_RELAY_URL ?? "ws://localhost:7777";
-  const publicRelays = (process.env.PUBLIC_RELAY_URLS ?? "").split(",").map((url) => url.trim()).filter(Boolean);
-  return [internal, ...publicRelays];
+  return configuredRelayUrls();
 }
 
 export async function publishEvent(event: Event) {
-  const results = await Promise.allSettled(relayUrls().map((url) => publishToRelay(url, event)));
-  if (results[0].status === "rejected") throw results[0].reason;
-  return results.map((result, index) => ({ relay: relayUrls()[index], ok: result.status === "fulfilled" }));
+  const urls = relayUrls();
+  const results = await Promise.allSettled(urls.map((url) => publishToRelay(url, event)));
+  if (!results.some((result) => result.status === "fulfilled")) {
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
+    throw new AggregateError(failures, "all relays rejected the event");
+  }
+  return results.map((result, index) => ({ relay: urls[index], ok: result.status === "fulfilled" }));
 }
 
 function publishToRelay(url: string, event: Event) {
@@ -113,7 +118,5 @@ export async function openRelayPublisher(url: string) {
 }
 
 function validateRelayUrl(url: string) {
-  const parsed = new URL(url);
-  if (!["ws:", "wss:"].includes(parsed.protocol)) throw new Error("relay URL must use ws:// or wss://");
-  if (parsed.username || parsed.password) throw new Error("relay URL must not contain credentials");
+  normalizeRelayUrl(url);
 }

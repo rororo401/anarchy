@@ -14,11 +14,12 @@ import (
 )
 
 type Event struct {
-	ID      string     `json:"id"`
-	Pubkey  string     `json:"pubkey"`
-	Kind    int        `json:"kind"`
-	Content string     `json:"content"`
-	Tags    [][]string `json:"tags"`
+	ID        string     `json:"id"`
+	Pubkey    string     `json:"pubkey"`
+	Kind      int        `json:"kind"`
+	CreatedAt int64      `json:"created_at"`
+	Content   string     `json:"content"`
+	Tags      [][]string `json:"tags"`
 }
 
 type Request struct {
@@ -78,6 +79,9 @@ func evaluate(req Request) Response {
 	}
 	if !allowedKind(req.Event.Kind) {
 		return reject("blocked: unsupported event kind")
+	}
+	if req.Event.CreatedAt > time.Now().Add(10*time.Minute).Unix() {
+		return reject("blocked: event timestamp too far in the future")
 	}
 	if len(req.Event.Tags) > 64 {
 		return reject("blocked: too many tags")
@@ -143,13 +147,18 @@ func validateContent(event Event) string {
 	switch event.Kind {
 	case 0:
 		var profile map[string]json.RawMessage
-		if len(event.Tags) != 0 || len(event.Content) > 512 || json.Unmarshal([]byte(event.Content), &profile) != nil || len(profile) != 1 {
+		if len(event.Tags) != 0 || len(event.Content) > 4096 || json.Unmarshal([]byte(event.Content), &profile) != nil {
 			return "blocked: invalid profile"
 		}
-		var name string
-		rawName, exists := profile["name"]
-		if !exists || json.Unmarshal(rawName, &name) != nil || utf8.RuneCountInString(name) > 40 {
-			return "blocked: invalid profile"
+		for _, field := range []string{"name", "display_name"} {
+			rawName, exists := profile[field]
+			if !exists {
+				continue
+			}
+			var name string
+			if json.Unmarshal(rawName, &name) != nil || utf8.RuneCountInString(name) > 40 {
+				return "blocked: invalid profile"
+			}
 		}
 	case 30078:
 		var setting map[string]json.RawMessage

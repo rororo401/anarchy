@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { finalizeEvent, generateSecretKey } from "nostr-tools";
 import { WebSocketServer } from "ws";
 import { openRelayPublisher } from "../lib/server/relay";
+import { configuredRelayUrls } from "../lib/server/relay-urls";
 
 async function main() {
   const server = new WebSocketServer({ port: 0 });
@@ -30,6 +31,10 @@ async function main() {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 
   await assert.rejects(() => openRelayPublisher("https://relay.example.com"), /must use ws/);
+
+  process.env.INTERNAL_RELAY_URL = "wss://relay.example.com/";
+  process.env.PUBLIC_RELAY_URLS = "wss://relay.example.com,wss://second.example.com/";
+  assert.deepEqual(configuredRelayUrls(), ["wss://relay.example.com", "wss://second.example.com"]);
   console.log("relay publisher: ok");
 }
 
