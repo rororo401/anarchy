@@ -1,0 +1,19 @@
+{
+	email {$ACME_EMAIL:admin@example.com}
+}
+
+{$WEB_DOMAIN:localhost} {
+	tls internal
+	encode zstd gzip
+	request_body {
+		max_size 96KB
+	}
+	reverse_proxy localhost:3100
+}
+
+{$RELAY_DOMAIN:relay.localhost} {
+	tls internal
+	reverse_proxy localhost:8080 {
+		header_up X-Real-IP {remote_host}
+	}
+}

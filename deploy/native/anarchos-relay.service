@@ -1,0 +1,17 @@
+[Unit]
+Description=Anarchos strfry Nostr relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+WorkingDirectory=/etc/anarchos
+EnvironmentFile=/etc/anarchos/anarchos.env
+ExecStart=/usr/local/bin/strfry relay
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

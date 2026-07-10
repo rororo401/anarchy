@@ -1,0 +1,16 @@
+[Unit]
+Description=Anarchos Nostr event indexer
+After=network-online.target anarchos-relay.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=/etc/anarchos/anarchos.env
+ExecStart=/usr/bin/npm run indexer
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

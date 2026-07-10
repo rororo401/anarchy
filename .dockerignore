@@ -1,0 +1,15 @@
+.git
+node_modules
+.next
+out
+data
+*.log
+*.tsbuildinfo
+
+.env*
+!.env.example
+!.env.test.example
+
+*.sqlite
+*.sqlite-*
+*.db

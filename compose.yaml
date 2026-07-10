@@ -1,0 +1,78 @@
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: infra/relay/Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 2m
+    environment:
+      RELAY_DB_PATH: /app/strfry-db
+      RELAY_MIN_FREE_BYTES: ${RELAY_MIN_FREE_BYTES:-1073741824}
+    volumes:
+      - relay-data:/app/strfry-db
+      - ./infra/relay/strfry.conf:/etc/strfry.conf:ro
+      - relay-policy-state:/var/lib/anarchos
+
+  relay-guard:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    volumes:
+      - ./infra/nginx-relay.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - relay
+
+  web:
+    build: .
+    restart: unless-stopped
+    environment:
+      SQLITE_PATH: /app/data/anarchos.sqlite
+      INTERNAL_RELAY_URL: ws://relay:7777
+      NEXT_PUBLIC_RELAY_URL: ${NEXT_PUBLIC_RELAY_URL:?set NEXT_PUBLIC_RELAY_URL in .env}
+      PUBLIC_RELAY_URLS: ${PUBLIC_RELAY_URLS:-}
+    volumes:
+      - app-data:/app/data
+    depends_on:
+      relay:
+        condition: service_started
+
+  indexer:
+    build: .
+    restart: unless-stopped
+    command: ["npm", "run", "indexer"]
+    environment:
+      SQLITE_PATH: /app/data/anarchos.sqlite
+      INTERNAL_RELAY_URL: ws://relay:7777
+      BLOCKED_PUBKEY_FILE: /var/lib/anarchos/blocked-pubkeys.txt
+      BACKFILL_DELAY_MS: ${BACKFILL_DELAY_MS:-100}
+    volumes:
+      - app-data:/app/data
+      - relay-policy-state:/var/lib/anarchos
+    depends_on:
+      relay:
+        condition: service_started
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      WEB_DOMAIN: ${WEB_DOMAIN:-localhost}
+      RELAY_DOMAIN: ${RELAY_DOMAIN:-relay.localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - web
+      - relay-guard
+
+volumes:
+  app-data:
+  relay-data:
+  relay-policy-state:
+  caddy-data:
+  caddy-config:

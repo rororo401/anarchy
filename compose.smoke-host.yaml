@@ -1,0 +1,31 @@
+services:
+  relay:
+    network_mode: host
+    build:
+      network: host
+
+  relay-guard:
+    network_mode: host
+    volumes:
+      - ./infra/nginx-relay-host.conf:/etc/nginx/conf.d/default.conf:ro
+
+  web:
+    network_mode: host
+    build:
+      network: host
+    environment:
+      INTERNAL_RELAY_URL: ws://localhost:7777
+      PORT: 3100
+
+  indexer:
+    network_mode: host
+    build:
+      network: host
+    environment:
+      INTERNAL_RELAY_URL: ws://localhost:7777
+
+  caddy:
+    network_mode: host
+    ports: !reset []
+    volumes:
+      - ./infra/Caddyfile.smoke-host:/etc/caddy/Caddyfile:ro
