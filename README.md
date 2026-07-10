@@ -91,9 +91,11 @@ sudo bash deploy/native/admin.sh backfill-relay wss://relay.example.com
 
 공개 사용자 상태는 릴레이 이벤트로 복구할 수 있습니다.
 
-- 닉네임: NIP-01 kind `0` 프로필의 `name` 또는 `display_name`
-- 고정닉 사용 여부: NIP-78 kind `30078`, `d=anarchos:fixed-nickname`
+- 게시글·댓글 표시 닉네임: 각 kind `1`·`1111` 이벤트의 `display_name` 태그
+- 현재 고정닉 설정: NIP-01 kind `0` 프로필과 NIP-78 kind `30078`, `d=anarchos:fixed-nickname`
 - 게시글·댓글·추천·삭제: 각각 kind `1`, `1111`, `7`, `5`
+
+고정닉은 이후 작성하는 게시글과 댓글의 `display_name`에 복사됩니다. 고정닉을 켜거나 이름을 바꾸더라도 이미 발행된 게시글과 댓글은 이벤트에 기록된 작성 당시 닉네임을 계속 표시합니다. 따라서 과거 글은 기존 클라이언트와 동일하게 보이고, DB를 재색인해도 표시 이름이 바뀌지 않습니다.
 
 따라서 SQLite의 게시글과 프로필은 권위 있는 원본이 아니라 조회 성능을 위한 projection입니다. `sudo bash deploy/native/admin.sh reindex`로 릴레이에서 수집된 `events` 테이블을 기준으로 다시 만들 수 있습니다.
 

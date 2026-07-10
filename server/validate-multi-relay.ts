@@ -48,6 +48,24 @@ async function main() {
   assert.equal(storedProfile.fixed_nickname, "relay-name");
   assert.equal(Boolean(storedProfile.fixed_nickname_enabled), true);
 
+  const [{ NextRequest }, { GET: getFeed }, { GET: getPost }] = await Promise.all([
+    import("next/server"),
+    import("../app/api/feed/route"),
+    import("../app/api/posts/[id]/route"),
+  ]);
+  const feedResponse = await getFeed(new NextRequest("http://localhost/api/feed"));
+  assert.equal(feedResponse.status, 200);
+  const feed = await feedResponse.json() as { posts: Array<{ id: string; author_name: string }> };
+  assert.equal(feed.posts.find(({ id }) => id === early.id)?.author_name, "event-name");
+
+  const postResponse = await getPost(
+    new NextRequest(`http://localhost/api/posts/${early.id}`),
+    { params: Promise.resolve({ id: early.id }) },
+  );
+  assert.equal(postResponse.status, 200);
+  const post = await postResponse.json() as { post: { author_name: string } };
+  assert.equal(post.post.author_name, "event-name");
+
   await db.end();
   rmSync(directory, { recursive: true, force: true });
   console.log("multi-relay indexing: ok");
