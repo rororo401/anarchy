@@ -14,7 +14,10 @@ export async function POST(request: NextRequest) {
     const event = await request.json() as Event;
     validateCommunityEvent(event);
     const relays = await publishEvent(event);
-    const indexed = await indexEvent(event);
+    const indexed = await indexEvent(event, {
+      sourceRelays: relays.filter(({ ok }) => ok).map(({ relay }) => relay),
+      awardLocalPoints: true,
+    });
     return NextResponse.json({ indexed, relays });
   } catch (error) {
     return apiError(error);
